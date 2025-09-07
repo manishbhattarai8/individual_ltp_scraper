@@ -2,12 +2,9 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import sqlite3
-import schedule
-import time
 from datetime import datetime, timedelta
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-import threading
 import logging
 import os
 import ssl
@@ -884,10 +881,55 @@ def health_check():
 def trigger_scrape():
     """Manual trigger for scraping (useful for testing)"""
     try:
+        logger.info("Manual scrape triggered from API")
         scraper.run_scraper()
         return jsonify({
             'success': True,
-            'message': 'Scraping completed'
+            'message': 'Scraping completed successfully'
+        })
+    except Exception as e:
+        logger.error(f"Manual scrape failed: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/cleanup', methods=['POST'])
+def manual_cleanup():
+    """Manual cleanup endpoint"""
+    try:
+        days_to_keep = int(request.args.get('days', 7))
+        scraper.cleanup_old_data(days_to_keep)
+        return jsonify({
+            'success': True,
+            'message': f'Cleanup completed, kept last {days_to_keep} days'
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/last-update', methods=['GET'])
+def get_last_update():
+    """Get timestamp of last data update"""
+    try:
+        conn = sqlite3.connect(scraper.db_path)
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT MAX(timestamp) as latest FROM stocks')
+        latest_timestamp = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(DISTINCT symbol) as unique_symbols FROM stocks')
+        unique_symbols = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'last_update': latest_timestamp,
+            'unique_symbols': unique_symbols,
+            'update_source': 'manual_trigger_only'
         })
     except Exception as e:
         return jsonify({
@@ -939,7 +981,8 @@ def debug_data():
             'sample_data': results,
             'debug_info': {
                 'db_path': scraper.db_path,
-                'urls_configured': scraper.urls
+                'urls_configured': scraper.urls,
+                'scraping_mode': 'on_demand_only'
             }
         })
     except Exception as e:
@@ -1026,40 +1069,13 @@ def get_stats():
             'error': str(e)
         }), 500
 
-def run_scheduler():
-    """Run the scheduler in a separate thread"""
-    # Schedule scraping every 5 minutes during market hours (10 AM - 3 PM Nepal Time)
-    schedule.every().minute.at(":00").do(lambda: scraper.run_scraper() if is_market_hours() else None)
-    schedule.every().minute.at(":30").do(lambda: scraper.run_scraper() if is_market_hours() else None)
-    
-    # Run cleanup daily at 6 PM
-    schedule.every().day.at("18:00").do(scraper.cleanup_old_data)
-    
-    while True:
-        schedule.run_pending()
-        time.sleep(1)
-
-def is_market_hours():
-    """Check if current time is within market hours (Nepal time)"""
-    from datetime import datetime
-    now = datetime.now()
-    current_hour = now.hour
-    
-    # Nepal Stock Exchange operates from 10 AM to 3 PM (Sunday to Thursday)
-    # Skip Friday and Saturday (weekends in Nepal)
-    if now.weekday() in [4, 5]:  # Friday = 4, Saturday = 5
-        return False
-    
-    return 10 <= current_hour <= 15
-
 if __name__ == '__main__':
-    # Start scheduler in background thread
-    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
-    
-    # Initial scrape
+    # Initial scrape on startup only
+    logger.info("Running initial scrape on startup...")
     scraper.run_scraper()
+    logger.info("Initial scrape completed. Further scraping only on manual trigger.")
     
-    # Start Flask app
+    # Start Flask app (no scheduler)
     port = int(os.environ.get('PORT', 5000))
+    logger.info(f"Starting Flask app on port {port} - ON-DEMAND SCRAPING MODE")
     app.run(host='0.0.0.0', port=port, debug=False)
