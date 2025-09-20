@@ -315,7 +315,6 @@ class SecurityManager:
         finally:
             conn.close()
 
-# Your existing NepalStockScraper class remains the same
 class NepalStockScraper:
     def __init__(self, db_path='nepal_stock.db'):
         self.db_path = db_path
@@ -719,7 +718,6 @@ scraper.schedule_periodic_scraping()
 # Initialize security manager
 security_manager = SecurityManager(scraper.db_path)
 
-# Your existing Flask routes and authentication decorators remain the same
 def require_auth(f):
     """Decorator to require API key authentication"""
     @wraps(f)
@@ -768,7 +766,7 @@ def require_admin(f):
     
     return decorated_function
 
-# Your existing routes remain the same...
+# API Routes
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
@@ -779,6 +777,29 @@ def health_check():
         'stock_count': stock_count,
         'timestamp': datetime.now().isoformat()
     })
+
+@app.route('/api/key-info', methods=['GET'])
+@require_auth
+def get_key_info():
+    """Get information about the authenticated key"""
+    try:
+        key_info = security_manager.get_key_info(request.key_info['key_id'])
+        if key_info:
+            return jsonify({
+                'success': True,
+                'key_info': key_info
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Key information not found'
+            }), 404
+    except Exception as e:
+        logger.error(f"Error getting key info: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 @app.route('/api/stocks', methods=['GET'])
 @require_auth
@@ -847,8 +868,132 @@ def trigger_scrape():
             'error': str(e)
         }), 500
 
-# Include all your existing admin endpoints...
-# [All your existing admin routes remain the same]
+# Admin endpoints
+@app.route('/api/admin/generate-key', methods=['POST'])
+@require_auth
+@require_admin
+def admin_generate_key():
+    """Generate new API key (admin only)"""
+    try:
+        data = request.get_json()
+        key_type = data.get('key_type', 'regular')
+        description = data.get('description', '')
+        
+        if key_type not in ['admin', 'regular']:
+            return jsonify({
+                'success': False,
+                'error': 'Invalid key type. Must be "admin" or "regular"'
+            }), 400
+        
+        key_pair = security_manager.generate_key_pair(
+            key_type=key_type,
+            created_by=request.key_info['key_id'],
+            description=description
+        )
+        
+        if key_pair:
+            return jsonify({
+                'success': True,
+                'key_pair': key_pair
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to generate key'
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Error generating key: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/admin/keys', methods=['GET'])
+@require_auth
+@require_admin
+def admin_list_keys():
+    """List all API keys (admin only)"""
+    try:
+        keys = security_manager.list_all_keys()
+        return jsonify({
+            'success': True,
+            'keys': keys
+        })
+    except Exception as e:
+        logger.error(f"Error listing keys: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/admin/keys/<key_id>/deactivate', methods=['POST'])
+@require_auth
+@require_admin
+def admin_deactivate_key(key_id):
+    """Deactivate an API key (admin only)"""
+    try:
+        success = security_manager.deactivate_key(key_id)
+        if success:
+            return jsonify({
+                'success': True,
+                'message': f'Key {key_id} deactivated successfully'
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Failed to deactivate key'
+            }), 400
+    except Exception as e:
+        logger.error(f"Error deactivating key: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+@app.route('/api/admin/stats', methods=['GET'])
+@require_auth
+@require_admin
+def admin_stats():
+    """Get system statistics (admin only)"""
+    try:
+        conn = sqlite3.connect(scraper.db_path)
+        cursor = conn.cursor()
+        
+        # Get key statistics
+        cursor.execute('SELECT COUNT(*) FROM api_keys WHERE is_active = TRUE')
+        active_keys = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM api_keys')
+        total_keys = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM device_sessions WHERE is_active = TRUE')
+        active_sessions = cursor.fetchone()[0]
+        
+        cursor.execute('SELECT COUNT(*) FROM api_logs WHERE timestamp > datetime("now", "-24 hours")')
+        requests_24h = cursor.fetchone()[0]
+        
+        stock_count = scraper.get_stock_count()
+        
+        conn.close()
+        
+        return jsonify({
+            'success': True,
+            'stats': {
+                'active_keys': active_keys,
+                'total_keys': total_keys,
+                'active_sessions': active_sessions,
+                'requests_24h': requests_24h,
+                'stock_count': stock_count,
+                'timestamp': datetime.now().isoformat()
+            }
+        })
+    except Exception as e:
+        logger.error(f"Error getting stats: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
 
 if __name__ == '__main__':
     # Create initial admin key if none exists
