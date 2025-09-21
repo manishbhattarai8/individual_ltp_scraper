@@ -32,6 +32,9 @@ class SecurityManager:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
+        # Enable foreign key constraints
+        cursor.execute('PRAGMA foreign_keys = ON')
+        
         # API Keys table
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS api_keys (
@@ -58,7 +61,7 @@ class SecurityManager:
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 last_activity DATETIME DEFAULT CURRENT_TIMESTAMP,
                 is_active BOOLEAN DEFAULT TRUE,
-                FOREIGN KEY (key_id) REFERENCES api_keys (key_id),
+                FOREIGN KEY (key_id) REFERENCES api_keys (key_id) ON DELETE CASCADE,
                 UNIQUE(key_id, device_id)
             )
         ''')
@@ -73,7 +76,7 @@ class SecurityManager:
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                 ip_address TEXT,
                 user_agent TEXT,
-                FOREIGN KEY (key_id) REFERENCES api_keys (key_id)
+                FOREIGN KEY (key_id) REFERENCES api_keys (key_id) ON DELETE SET NULL
             )
         ''')
         
@@ -97,6 +100,7 @@ class SecurityManager:
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        cursor.execute('PRAGMA foreign_keys = ON')
         
         try:
             cursor.execute('''
@@ -129,6 +133,7 @@ class SecurityManager:
         
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        cursor.execute('PRAGMA foreign_keys = ON')
         
         try:
             # Check if key exists and is active
@@ -279,23 +284,44 @@ class SecurityManager:
         finally:
             conn.close()
     
-    def deactivate_key(self, key_id):
-        """Deactivate a key and all its sessions"""
+    def delete_key(self, key_id):
+        """Delete a key and all associated data from the database"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        cursor.execute('PRAGMA foreign_keys = ON')
         
         try:
-            cursor.execute('UPDATE api_keys SET is_active = FALSE WHERE key_id = ?', (key_id,))
-            cursor.execute('UPDATE device_sessions SET is_active = FALSE WHERE key_id = ?', (key_id,))
+            # Check if key exists
+            cursor.execute('SELECT key_id FROM api_keys WHERE key_id = ?', (key_id,))
+            if not cursor.fetchone():
+                return False
+            
+            # Delete the key (CASCADE will handle device_sessions, api_logs will have key_id set to NULL)
+            cursor.execute('DELETE FROM api_keys WHERE key_id = ?', (key_id,))
+            
+            # Verify deletion
+            deleted_count = cursor.rowcount
             conn.commit()
-            return cursor.rowcount > 0
+            
+            if deleted_count > 0:
+                logger.info(f"Successfully deleted key: {key_id}")
+                return True
+            else:
+                logger.warning(f"No key found to delete: {key_id}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error deleting key {key_id}: {e}")
+            conn.rollback()
+            return False
         finally:
             conn.close()
     
     def cleanup_old_sessions(self, days=30):
-        """Clean up old inactive sessions"""
+        """Clean up old inactive sessions and logs"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
+        cursor.execute('PRAGMA foreign_keys = ON')
         
         cutoff_date = (datetime.now() - timedelta(days=days)).isoformat()
         
@@ -927,25 +953,32 @@ def admin_list_keys():
             'error': str(e)
         }), 500
 
-@app.route('/api/admin/keys/<key_id>/deactivate', methods=['POST'])
+@app.route('/api/admin/keys/<key_id>/delete', methods=['DELETE'])
 @require_auth
 @require_admin
-def admin_deactivate_key(key_id):
-    """Deactivate an API key (admin only)"""
+def admin_delete_key(key_id):
+    """Delete an API key completely from the database (admin only)"""
     try:
-        success = security_manager.deactivate_key(key_id)
+        # Prevent admin from deleting their own key
+        if key_id == request.key_info['key_id']:
+            return jsonify({
+                'success': False,
+                'error': 'Cannot delete your own admin key'
+            }), 400
+        
+        success = security_manager.delete_key(key_id)
         if success:
             return jsonify({
                 'success': True,
-                'message': f'Key {key_id} deactivated successfully'
+                'message': f'Key {key_id} deleted successfully'
             })
         else:
             return jsonify({
                 'success': False,
-                'error': 'Failed to deactivate key'
-            }), 400
+                'error': 'Key not found or failed to delete'
+            }), 404
     except Exception as e:
-        logger.error(f"Error deactivating key: {e}")
+        logger.error(f"Error deleting key: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
