@@ -2,7 +2,7 @@ import requests
 from bs4 import BeautifulSoup
 import json
 import sqlite3
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 from flask import Flask, jsonify, request
 from flask_cors import CORS
 import logging
@@ -17,7 +17,6 @@ import secrets
 from functools import wraps
 import threading
 import time as time_module
-import pytz
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -27,8 +26,8 @@ class MarketHours:
     """Handle NEPSE market hours and trading day logic"""
     
     def __init__(self):
-        # Nepal timezone
-        self.nepal_tz = pytz.timezone('Asia/Kathmandu')
+        # Nepal timezone (UTC+5:45)
+        self.nepal_tz = timezone(timedelta(hours=5, minutes=45))
         
         # NEPSE trading hours (Sunday to Thursday, 12:00 PM to 3:00 PM)
         self.market_open_time = time(12, 0)  # 12:00 PM
